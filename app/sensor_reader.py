@@ -84,7 +84,6 @@ class SensorReader:
             b'0110\r',
         ]
 
-
         # 센서 연결
         try:
             await self.client.connect()
@@ -97,7 +96,7 @@ class SensorReader:
             for service in self.client.services:
                 for characteristic in service.characteristics:
                     try:
-                        # DB에 UUID 정보 저장
+                        # postgresql DB에 UUID 정보 저장
                         service_data = UUIDBase(service_id=service.uuid, characteristic_uuid=characteristic.uuid, characteristic_properties=characteristic.properties, characteristic_description=characteristic.description)
                         session.add(service_data)
                         session.commit()
@@ -127,7 +126,7 @@ class SensorReader:
                     await asyncio.wait_for(self.response_received.wait(), timeout=5.0)
 
                     data = await self.response_queue.get()
-                    if data is None:
+                    if data is not None:
                         self.active_write_uuid = write_uuid
                         break
 
@@ -135,23 +134,63 @@ class SensorReader:
                     print(f"[WRITE ERROR] {write_uuid} timed out")
             print("[ACTIVE WRITE UUID] " + self.active_write_uuid)
 
-
-            # 실시간 RPM 데이터 수신
-            rpm_cmd = b'010C\r',
-
-
-            # RPM 데이터를 지속적으로 요청
-            while True:
-                self.response_queue.clear()
-                await self.client.write_gatt_char(self.active_write_uuid, rpm_cmd, response=True) # 센서에 ecu_command 요청
+            # 나머지 at 커멘드 순차적으로 입력
+            for at in at_commands:
                 try:
-                    await asyncio.wait_for(self.response_received.wait(), timeout=1.0) # 수신데이터 대기
-                    while not self.response_queue.empty(): # 모든 요청을 순차적으로 처리
-                        data = await self.response_queue.get()
-                        print("[RPM DATA] " + data)
+                    self.response_received.clear()
+                    await self.client.write_gatt_char(write_uuid, at, response=True)
+                    await asyncio.wait_for(self.response_received.wait(), timeout=5.0) # 응답이 올 때까지 대기
+                    data = await self.response_queue.get()
+                    print(f"[AT COMMAND %{at} SUCCESS] " + data)
 
+                    if data is None:
+                        print("[AT COMMAND %{at} ERROR] No Response")
                 except asyncio.TimeoutError:
-                    print(f"[RPM READING ERROR] {write_uuid} timed out")
-                except Exception as e:
-                    print(f"[RPM ERROR] {e}")
+                    print(f"[AT COMMAND %{at} TIMED OUT] " + data)
+
+
+            # ecu commands 동시 요청
+            tasks = []
+            for ecu in ecu_commands:
+                async def write_single_ecu_command():# 각 명령어마다 독립적인 코루틴 생성
+                    try:
+                        self.response_received.clear()
+                        await self.client.write_gatt_char(write_uuid, ecu, response=True)
+                        await asyncio.wait_for(self.response_received.wait(), timeout=5.0)
+                        while not self.response_queue.empty():
+                            ecu_data = await self.response_queue.get()
+                            await self.save_data(ecu_data, data)
+                    except asyncio.TimeoutError:
+                        print(f"[WRITE ERROR] {ecu} timed out")
+                    except Exception as e:
+                        print(f"[WRITE ERROR] {e}")
+                tasks.append(write_single_ecu_command)
+
+            await asyncio.gather(*tasks)
+
+
+
+
+
+
+
+
+            # # 실시간 RPM 데이터 수신
+            # rpm_cmd = b'010C\r',
+            #
+            #
+            # # RPM 데이터를 지속적으로 요청
+            # while True:
+            #     self.response_queue.clear()
+            #     await self.client.write_gatt_char(self.active_write_uuid, rpm_cmd, response=True) # 센서에 ecu_command 요청
+            #     try:
+            #         await asyncio.wait_for(self.response_received.wait(), timeout=1.0) # 수신데이터 대기
+            #         while not self.response_queue.empty(): # 모든 요청을 순차적으로 처리
+            #             data = await self.response_queue.get()
+            #             print("[RPM DATA] " + data)
+            #
+            #     except asyncio.TimeoutError:
+            #         print(f"[RPM READING ERROR] {write_uuid} timed out")
+            #     except Exception as e:
+            #         print(f"[RPM ERROR] {e}")
 
