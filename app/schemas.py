@@ -2,14 +2,15 @@
 """
 fastapi의 요청과 응답 데이터의 유효성을 검사하는 pydantic 모델 정의
 """
+from typing import List
+
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy.dialects.postgresql import array
 
 
 class UUIDBase(BaseModel):
-    service_id : str
+    service_uuid : str
     characteristic_uuid : str
-    characteristic_properties : array
+    characteristic_properties : str
     characteristic_description : str
 
 class UUIDCreate(UUIDBase):

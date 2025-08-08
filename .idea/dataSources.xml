@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="DataSourceManagerImpl" format="xml" multifile-model="true">
-    <data-source source="LOCAL" name="obdflow" uuid="a0efe8b1-4813-46b1-a139-20ec5fcc5e62">
+    <data-source source="LOCAL" name="obdflow@localhost" uuid="d8ad00b4-9557-4028-bf97-79c4d7c66678">
       <driver-ref>postgresql</driver-ref>
       <synchronize>true</synchronize>
       <jdbc-driver>org.postgresql.Driver</jdbc-driver>
-      <jdbc-url>jdbc:postgresql://localhost:5433/</jdbc-url>
+      <jdbc-url>jdbc:postgresql://localhost:5433/obdflow</jdbc-url>
       <working-dir>$ProjectFileDir$</working-dir>
     </data-source>
   </component>

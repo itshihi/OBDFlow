@@ -39,7 +39,9 @@ from sqlalchemy.orm import declarative_base
 
 class Settings(BaseSettings):
     # postgresql+asyncpg 는 asyncpg 드라이버로 postgresql 을 사용하겠다는 의미
-    DATABASE_URL: str = "postgresql+asyncpg://"+os.getenv("POSTGRES_USER")+":"+os.getenv("POSTGRES_PASSWORD")+"@"+os.getenv("POSTGRES_HOST")+":"+os.getenv("POSTGRES_PORT")+"/"+os.getenv("POSTGRES_DB")
+    DATABASE_URL: str = "postgresql+asyncpg://docker_user:docker_user@localhost:5433/obdflow"
+
+
     model_config = SettingsConfigDict(env_file="../.env")
 
 settings = Settings()

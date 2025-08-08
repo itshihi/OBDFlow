@@ -1,7 +1,6 @@
 
 from app.database import AsyncSessionLocal
-from app.models import RawData
-from app.schemas import UUIDBase
+from app.models import RawData, UUID
 
 """
 0105	냉각수 온도
@@ -35,20 +34,29 @@ class SensorReader:
 
 
     # OBD 센서에서 데이터가 수신될 때마다 실행되는 함수
+    # bytearray(b'41 0C 11 30 \r41 0C 11 2E \r')  와 같은 데이터를 str으로 변환
     async def notify_handler(self, sender, data):
+        print("[HANDLER ORIGIN DATA]", data)
+        # await self.response_queue.put(data)
+        # str_data = data.decode("utf-8")
+        # str_data.split(" ")
+        # print("[HANDLER PARSED DATA]", str_data)
         await self.response_queue.put(data)
-        self.response_received.set()
+        self.response_received.set()  # todo: 얘를 추가 안해서 hexdecimal 에러 발생
+
+
+
 
         #todo: 데이터 전처리(파싱)
 
 
-    async def save_data(self, type , value):
+    async def save_data(self, ecu_type , value):
         async with AsyncSessionLocal() as session:
             try:
-                rawdata = RawData(type=type, value=value)
+                rawdata = RawData(type=ecu_type, value=value)
                 session.add(rawdata)
                 await session.commit()
-                await session.refresh(rawdata)
+                await session.refresh()
             except Exception as e:
                 await session.rollback()
                 print("[SAVE ERROR]", e)
@@ -56,6 +64,31 @@ class SensorReader:
 
     # DB에
     async def reading_data(self):
+
+        self.client = bleak.BleakClient(bleAddress)
+
+        try:
+            await self.client.connect()
+        except Exception as e:
+            print("[COnncet ERROR]", e)
+            return
+
+        # 센서 연결
+        # try:
+        #     await self.client.connect()
+        #     print("[CONNECTED SUCCESS] " + self.ble_address)
+        # except Exception as e:
+        #     print(f"[CONNECTED ERROR] {e}")
+
+
+        try:
+            if self.client.is_connected:
+                print("[CONNECTED SUCCESS]")
+            else:
+                print("[UNCONNECTED]")
+        except Exception as e:
+            print("[CONNECTED ERROR]", e)
+
 
         write_char_uuid = []
         notify_char_uuid = []
@@ -84,22 +117,18 @@ class SensorReader:
             b'0110\r',
         ]
 
-        # 센서 연결
-        try:
-            await self.client.connect()
-            print("[CONNECTED SUCCESS] " + self.ble_address)
-        except Exception as e:
-            print(f"[CONNECTED ERROR] {e}")
 
         # service와 characteristic UUID 탐색
         async with AsyncSessionLocal() as session:
             for service in self.client.services:
                 for characteristic in service.characteristics:
                     try:
+
                         # postgresql DB에 UUID 정보 저장
-                        service_data = UUIDBase(service_id=service.uuid, characteristic_uuid=characteristic.uuid, characteristic_properties=characteristic.properties, characteristic_description=characteristic.description)
+                        service_data = UUID(service_uuid=str(service.uuid), characteristic_uuid=str(characteristic.uuid), characteristic_properties= ','.join(characteristic.properties), characteristic_description=str(characteristic.description))
                         session.add(service_data)
-                        session.commit()
+                        session.commit() # todo:/Users/sihyeon/PycharmProjects/OBDProject/app/sensor_reader.py:126: RuntimeWarning: coroutine 'AsyncSession.commit' was never awaited
+
 
                         # write/notify 권한 UUID 배열 생성
                         if 'write' in characteristic.properties:
@@ -110,87 +139,76 @@ class SensorReader:
                     except Exception as e:
                         print(f"[UUID ERROR] {e}")
 
+            # todo: PID 수신 받을 수 있는 notify-write 조합이 따로 있음
             # 유효한 notify uuid 저장
             for notify_uuid in notify_char_uuid:
-                await self.client.start_notify(notify_uuid, self.notify_handler)
-                self.active_notify_uuid = notify_uuid
-            print("[ACTIVE NOTIFY UUID] " + self.active_notify_uuid)
-
-            # 유효한 write uuid 저장 -> 데이터 수신 성공 여부 체크
-            for write_uuid in write_char_uuid:
-                await self.client.start_notify(write_uuid, self.notify_handler)
-                clear_cmd = b"ATZ\r"
                 try:
-                    self.response_received.clear()
-                    await self.client.write_gatt_char(write_uuid, clear_cmd, response=True)
-                    await asyncio.wait_for(self.response_received.wait(), timeout=5.0)
+                    await self.client.start_notify(notify_uuid, self.notify_handler)
+                    self.active_notify_uuid = notify_uuid
+                    print("[ACTIVE NOTIFY UUID] " + self.active_notify_uuid)
 
-                    data = await self.response_queue.get()
-                    if data is not None:
-                        self.active_write_uuid = write_uuid
-                        break
+                    # break
 
-                except asyncio.TimeoutError:
-                    print(f"[WRITE ERROR] {write_uuid} timed out")
-            print("[ACTIVE WRITE UUID] " + self.active_write_uuid)
+                    # 유효한 write uuid 저장 -> 데이터 수신 성공 여부 체크
+                    for write_uuid in write_char_uuid:
+                        clear_cmd = b"ATZ\r"
+                        try:
+                            self.response_received.clear()
+                            await self.client.write_gatt_char(write_uuid, clear_cmd, response=True)
+                            await asyncio.wait_for(self.response_received.wait(), timeout=5.0)
+
+                            print("[ACTIVE WRITE UUID] " + self.active_write_uuid)
+
+                            data = await self.response_queue.get()
+                            if data is not None:
+                                self.active_write_uuid = write_uuid
+                                break
+
+                        except asyncio.TimeoutError:
+                            print(f"[WRITE ERROR] {write_uuid} timed out")
+
+                except Exception as e:
+                    print(f"[NOTIFY ERROR]{notify_uuid} -  {e}")
+
+
+
+
 
             # 나머지 at 커멘드 순차적으로 입력
+            # todo: 중간에 안전하게 종료하는 법? -> ^c 를 눌러도 강제종료 불가능
             for at in at_commands:
                 try:
                     self.response_received.clear()
-                    await self.client.write_gatt_char(write_uuid, at, response=True)
+                    await self.client.write_gatt_char(self.active_write_uuid, at, response=True)
                     await asyncio.wait_for(self.response_received.wait(), timeout=5.0) # 응답이 올 때까지 대기
                     data = await self.response_queue.get()
-                    print(f"[AT COMMAND %{at} SUCCESS] " + data)
+                    print(f"[AT COMMAND SUCCESS] ", at, ' ',  data)
 
                     if data is None:
-                        print("[AT COMMAND %{at} ERROR] No Response")
+                        print("[AT COMMAND ERROR] No Response" , at)
                 except asyncio.TimeoutError:
-                    print(f"[AT COMMAND %{at} TIMED OUT] " + data)
+                    print("[AT COMMAND TIME OUT ERROR]" , at)
 
 
             # ecu commands 동시 요청
-            tasks = []
-            for ecu in ecu_commands:
-                async def write_single_ecu_command():# 각 명령어마다 독립적인 코루틴 생성
-                    try:
-                        self.response_received.clear()
-                        await self.client.write_gatt_char(write_uuid, ecu, response=True)
-                        await asyncio.wait_for(self.response_received.wait(), timeout=5.0)
-                        while not self.response_queue.empty():
-                            ecu_data = await self.response_queue.get()
-                            await self.save_data(ecu_data, data)
-                    except asyncio.TimeoutError:
-                        print(f"[WRITE ERROR] {ecu} timed out")
-                    except Exception as e:
-                        print(f"[WRITE ERROR] {e}")
-                tasks.append(write_single_ecu_command)
+            while True:
+                tasks = []
+                for ecu in ecu_commands:
+                    async def write_single_ecu_command(ecu_cmd):# 각 명령어마다 독립적인 코루틴 생성
+                        try:
+                            self.response_received.clear()
+                            await self.client.write_gatt_char(self.active_write_uuid, ecu_cmd, response=True)
+                            await asyncio.wait_for(self.response_received.wait(), timeout=5.0)
+                            while not self.response_queue.empty():
+                                ecu_data = await self.response_queue.get()
+                                print("[ECU DATA] ", ecu_cmd, ' ', str(ecu_data), '\n')
 
-            await asyncio.gather(*tasks)
+                                await self.save_data(ecu_data, str(ecu_data))
+                        except asyncio.TimeoutError:
+                            print(f"[WRITE ERROR] {ecu_cmd} timed out")
+                        except Exception as e:
+                            print(f"[WRITE ERROR] {e}")
+                    async_write_single_ecu_command = write_single_ecu_command(ecu)
+                    tasks.append(async_write_single_ecu_command)
 
-
-
-
-
-
-
-
-            # # 실시간 RPM 데이터 수신
-            # rpm_cmd = b'010C\r',
-            #
-            #
-            # # RPM 데이터를 지속적으로 요청
-            # while True:
-            #     self.response_queue.clear()
-            #     await self.client.write_gatt_char(self.active_write_uuid, rpm_cmd, response=True) # 센서에 ecu_command 요청
-            #     try:
-            #         await asyncio.wait_for(self.response_received.wait(), timeout=1.0) # 수신데이터 대기
-            #         while not self.response_queue.empty(): # 모든 요청을 순차적으로 처리
-            #             data = await self.response_queue.get()
-            #             print("[RPM DATA] " + data)
-            #
-            #     except asyncio.TimeoutError:
-            #         print(f"[RPM READING ERROR] {write_uuid} timed out")
-            #     except Exception as e:
-            #         print(f"[RPM ERROR] {e}")
-
+                await asyncio.gather(*tasks)
